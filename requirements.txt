@@ -1,0 +1,11 @@
+numpy
+pandas
+boto3
+nibabel
+scipy
+pillow
+tqdm
+matplotlib
+pycocotools
+
+git+https://github.com/tknapen/nsd_access.git
