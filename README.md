@@ -1,4 +1,4 @@
-# nsd-decoding-pipeline
+# How well aligned is continual learning in vision-language models with the human brain?
 
 ~~~
 python -m venv nsd_continual
