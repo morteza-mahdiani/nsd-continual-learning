@@ -1,8 +1,8 @@
 # nsd-decoding-pipeline
 
 ~~~
-python -m venv nsd_pipe
-source nsd_pipe/bin/activate  # On Windows, use `nsd_pipe\Scripts\activate`
+python -m venv nsd_continual
+source nsd_continual/bin/activate  # On Windows, use `nsd_continual\Scripts\activate`
 pip install -r requirements.txt
 ~~~
 
