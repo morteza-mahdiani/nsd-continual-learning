@@ -9,6 +9,7 @@ import numpy as np
 from scipy.io import loadmat
 from sentence_transformers import SentenceTransformer
 from pycocotools.coco import COCO
+import multiprocessing
 
 # ==== CONFIGURATION ====
 coco_annotation_file = './data/coco_data/annotations/captions_val2017.json'  # Path to COCO captions
@@ -22,7 +23,7 @@ print(f"Using device: {device}")
 # Load MPNet model on GPU from local path instead of downloading
 model_path = "./data/models/mpnet_model"
 model = SentenceTransformer(model_path).to(device)
-# model = SentenceTransformer('all-roberta-large-v1').to(device)
+print('loaded model is ready to be served')
 
 # Load COCO dataset
 coco = COCO(coco_annotation_file)
@@ -42,7 +43,6 @@ filtered_subject_idx = [np.setdiff1d(row, shared_idx) for row in subject_idx]
 filtered_subject_idx = np.array(filtered_subject_idx, dtype=object)
 
 cocoId_arr = np.zeros(shape=filtered_subject_idx.shape, dtype=int)
-
 for j in range(len(filtered_subject_idx)):
     cocoId = np.array(stiminfo['cocoId'])[stiminfo['subject%d'%(j+1)].astype(bool)]
     nsdId = np.array(stiminfo['nsdId'])[stiminfo['subject%d'%(j+1)].astype(bool)]
@@ -54,6 +54,11 @@ for j in range(len(filtered_subject_idx)):
           cocoId_arr[j,i] = (cocoId[nsdId==k])[0]  # COCO ID for each image
 
 subject_one_coco_ids = cocoId_arr[0] # COCO IDs for subject 01
+# Print shape of cocoId_arr
+print(f"Shape of cocoId_arr: {cocoId_arr.shape}")
+
+# Print number of unique COCO IDs for subject 1
+print(f"Number of unique COCO IDs for subject 1: {len(np.unique(subject_one_coco_ids[subject_one_coco_ids > 0]))}")
 
 # ==== LOGGING FUNCTION ====
 def log_gpu_cpu_usage(log_file):
@@ -75,29 +80,42 @@ def log_gpu_cpu_usage(log_file):
             time.sleep(10)  # Log every 10 seconds
 
 # Start logging in a separate process
-import multiprocessing
 log_file_path = os.path.join(output_dir, "gpu_cpu_usage.log")
 log_process = multiprocessing.Process(target=log_gpu_cpu_usage, args=(log_file_path,))
 log_process.start()
 
+
+coco_val = COCO('./data/coco_data/annotations/captions_val2017.json')
+coco_train = COCO('./data/coco_data/annotations/captions_train2017.json')
+
+def get_caption_from_coco(coco_id):
+    for coco in [coco_val, coco_train]:
+        if coco_id in coco.getImgIds():
+            ann_ids = coco.getAnnIds(imgIds=[coco_id])
+            anns = coco.loadAnns(ann_ids)
+            if anns:
+                return anns[0]['caption']
+    return None
+for coco_id in subject_one_coco_ids:
+    caption = get_caption_from_coco(coco_id)
+    if caption is None:
+        print(f"No caption for image {coco_id}")
+        continue
+    # print(f"Found caption: {caption}")
 # ==== PROCESS IMAGES ====
 embeddings_dict = {}
 
 for coco_id in subject_one_coco_ids:
-    ann_ids = coco.getAnnIds(imgIds=[coco_id])
-    anns = coco.loadAnns(ann_ids)
+    caption = get_caption_from_coco(coco_id)
 
-    if anns:
-        first_caption = anns[0]['caption']
-        print(f"Processing Image ID {coco_id}: {first_caption}")
+    # Convert caption to embedding
+    with torch.no_grad():
+        embedding = model.encode([caption], convert_to_numpy=True, device=device)[0]
 
-        # Convert caption to embedding
-        with torch.no_grad():
-            embedding = model.encode([first_caption], convert_to_numpy=True, device=device)[0]
+    # Save embedding
+    np.save(os.path.join(output_dir, f"{coco_id}.npy"), embedding)
+    embeddings_dict[coco_id] = caption  # Store captions for reference
 
-        # Save embedding
-        np.save(os.path.join(output_dir, f"{coco_id}.npy"), embedding)
-        embeddings_dict[coco_id] = first_caption  # Store captions for reference
 
 # Save metadata
 # Convert NumPy int64 keys to Python int
