@@ -37,6 +37,10 @@ echo "Syncing betas files from S3 into ./data/ ..."
 aws s3 sync --exclude "*" --include "*betas*nii*" \
     s3://natural-scenes-dataset/nsddata_betas/ppdata/subj01/func1pt8mm/betas_fithrf_GLMdenoise_RR/ ./data/nsddata_betas/ppdata/subj01/func1pt8mm/betas_fithrf_GLMdenoise_RR/ --no-sign-request
 
+# aws s3 sync --exclude "*" --include "*betas*mgh*" \
+#     s3://natural-scenes-dataset/nsddata_betas/ppdata/subj01/fsaverage/betas_fithrf_GLMdenoise_RR/ ./data/nsddata_betas/ppdata/subj01/fsaverage/betas_fithrf_GLMdenoise_RR/ --no-sign-request
+
+
 echo "Betas sync complete!"
 
 # Download behavioral responses for subjects 01 to 08
