@@ -1,3 +1,4 @@
+
 import os
 import torch
 import numpy as np
@@ -21,6 +22,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Load MPNet model on GPU from local path instead of downloading
+# You can run the script below to download the model once and save it locally:
+# python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('all-mpnet-base-v2'); model.save('./data/models/mpnet_model')" 
 model_path = "./data/models/mpnet_model"
 model = SentenceTransformer(model_path).to(device)
 print('loaded model is ready to be served')
