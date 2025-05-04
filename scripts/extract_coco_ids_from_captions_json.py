@@ -1,7 +1,7 @@
 import json
 
 # Load your JSON file
-input_file = 'data/coco_meta/captions_metadata.json'  # change to your actual file name
+input_file = '/home/mahdiani/projects/def-charesti/mahdiani/data/mpnet_embeddings/captions_metadata.json'  # change to your actual file name
 
 # Read the JSON content
 with open(input_file, 'r') as f:
@@ -19,7 +19,7 @@ print(coco_ids)
 
 # Save to file
 # Option 1: Save as JSON list
-with open('data/coco_meta/coco_ids.json', 'w') as f_json:
+with open('./data/coco_ids.json', 'w') as f_json:
     json.dump(coco_ids, f_json)
 
 # # Option 2: Save as plain text (one ID per line)

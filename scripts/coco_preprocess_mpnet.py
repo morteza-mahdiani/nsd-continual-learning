@@ -13,7 +13,7 @@ from pycocotools.coco import COCO
 import multiprocessing
 
 # ==== CONFIGURATION ====
-coco_annotation_file = './data/coco_data/annotations/captions_val2017.json'  # Path to COCO captions
+coco_annotation_file = '/home/mahdiani/projects/def-charesti/data/natural-scenes-dataset/nsddata_stimuli/stimuli/nsd/annotations/instances_val2017.json'  # Path to COCO captions
 output_dir = './data/mpnet_embeddings/'  # Directory to store embeddings
 os.makedirs(output_dir, exist_ok=True)
 
@@ -24,17 +24,16 @@ print(f"Using device: {device}")
 # Load MPNet model on GPU from local path instead of downloading
 # You can run the script below to download the model once and save it locally:
 # python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('all-mpnet-base-v2'); model.save('./data/models/mpnet_model')" 
-model_path = "./data/models/mpnet_model"
-model = SentenceTransformer(model_path).to(device)
+model = SentenceTransformer('all-mpnet-base-v2').to(device)
 print('loaded model is ready to be served')
 
 # Load COCO dataset
 coco = COCO(coco_annotation_file)
 
 # List of COCO IDs for subject 01
-exp_design = "./data/nsddata/experiments/nsd/nsd_expdesign.mat"
-synth_design = "./data/nsddata/experiments/nsdsynthetic/nsdsynthetic_expdesign.mat"
-nsd_stiminfo = './data/nsddata/experiments/nsd/nsd_stim_info_merged.pkl'
+exp_design = "/home/mahdiani/projects/def-charesti/data/natural-scenes-dataset/nsddata/experiments/nsd/nsd_expdesign.mat"
+synth_design = "/home/mahdiani/projects/def-charesti/data/natural-scenes-dataset/nsddata/experiments/nsdsynthetic/nsdsynthetic_expdesign.mat"
+nsd_stiminfo = "/home/mahdiani/projects/def-charesti/data/natural-scenes-dataset/nsddata/experiments/nsd/nsd_stim_info_merged.pkl"
 stiminfo = pd.read_pickle(nsd_stiminfo)
 exp_design = loadmat(exp_design)
 synth_design = loadmat(synth_design)
@@ -88,8 +87,8 @@ log_process = multiprocessing.Process(target=log_gpu_cpu_usage, args=(log_file_p
 log_process.start()
 
 
-coco_val = COCO('./data/coco_data/annotations/captions_val2017.json')
-coco_train = COCO('./data/coco_data/annotations/captions_train2017.json')
+coco_val = COCO('/home/mahdiani/projects/def-charesti/data/natural-scenes-dataset/nsddata_stimuli/stimuli/nsd/annotations/captions_val2017.json')
+coco_train = COCO('/home/mahdiani/projects/def-charesti/data/natural-scenes-dataset/nsddata_stimuli/stimuli/nsd/annotations/captions_train2017.json')
 
 def get_caption_from_coco(coco_id):
     for coco in [coco_val, coco_train]:
@@ -105,31 +104,45 @@ for coco_id in subject_one_coco_ids:
         print(f"No caption for image {coco_id}")
         continue
     # print(f"Found caption: {caption}")
+    
 # ==== PROCESS IMAGES ====
 embeddings_dict = {}
+captions_dict = {}
+
+embedding_list = []
+coco_id_list = []
 
 for coco_id in subject_one_coco_ids:
     caption = get_caption_from_coco(coco_id)
+    if caption is None:
+        print(f"No caption for image {coco_id}")
+        continue
 
-    # Convert caption to embedding
     with torch.no_grad():
         embedding = model.encode([caption], convert_to_numpy=True, device=device)[0]
 
-    # Save embedding
-    np.save(os.path.join(output_dir, f"{coco_id}.npy"), embedding)
-    embeddings_dict[coco_id] = caption  # Store captions for reference
+    # Store
+    embedding_list.append(embedding)
+    coco_id_list.append(coco_id)
+    captions_dict[int(coco_id)] = caption
 
+# After loop: save everything
 
-# Save metadata
-# Convert NumPy int64 keys to Python int
-embeddings_dict = {int(k): v for k, v in embeddings_dict.items()}
+# Convert to arrays
+embedding_array = np.vstack(embedding_list)  # Shape: (num_images, embedding_dim)
+coco_id_array = np.array(coco_id_list)        # Shape: (num_images,)
 
-# Save JSON file
+# Save embeddings and IDs into a single npz file
+np.savez_compressed(os.path.join(output_dir, "mpnet_embeddings_subject01.npz"),
+                    embeddings=embedding_array,
+                    coco_ids=coco_id_array)
+
+# Save captions metadata
 with open(os.path.join(output_dir, "captions_metadata.json"), 'w') as f:
-    json.dump(embeddings_dict, f, indent=4)
+    json.dump(captions_dict, f, indent=4)
 
 # Stop logging
 log_process.terminate()
 
-print("Processing complete. Embeddings saved in ./data/")
+print("Processing complete. Embeddings saved in one .npz file.")
 print(f"GPU and CPU usage logged in {log_file_path}")

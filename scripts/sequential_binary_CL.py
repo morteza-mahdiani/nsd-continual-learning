@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 import os
 import torch
 import torch.nn as nn
@@ -30,24 +29,34 @@ def build_binary_split(coco, cat1_id, cat2_id, restrict_ids=None):
 
 # 2. Adapter dataset
 class CLIPAdapterDataset(Dataset):
-    def __init__(self, image_ids, embed_dir, images_dir, processor):
+    def __init__(self, image_ids, embed_path, image_npz_path, processor):
         self.ids = image_ids
-        self.embed_dir = embed_dir
-        self.images_dir = images_dir
         self.processor = processor
+
+        emb_data = np.load(embed_path)
+        self.embeddings = emb_data['embeddings']
+        self.emb_coco_ids = emb_data['coco_ids']
+        self.emb_id_to_idx = {int(cid): i for i, cid in enumerate(self.emb_coco_ids)}
+
+        img_data = np.load(image_npz_path)
+        self.images = img_data['images']              # shape: (N, H, W, 3)
+        self.img_coco_ids = img_data['coco_ids']
+        self.img_id_to_idx = {int(cid): i for i, cid in enumerate(self.img_coco_ids)}
 
     def __len__(self):
         return len(self.ids)
 
     def __getitem__(self, idx):
-        coco_id = self.ids[idx]
-        padded = f"{int(coco_id):012d}.jpg"
-        img_path = os.path.join(self.images_dir, padded)
-        image = Image.open(img_path).convert('RGB')
+        coco_id = int(self.ids[idx])
+        emb_idx = self.emb_id_to_idx[coco_id]
+        img_idx = self.img_id_to_idx[coco_id]
+
+        image = self.images[img_idx]  # (H, W, 3)
+        image = Image.fromarray((image * 255).astype(np.uint8))
+
         inputs = self.processor(images=image, return_tensors='pt')
         pixel_values = inputs['pixel_values'].squeeze(0)
-        emb_path = os.path.join(self.embed_dir, f"{int(coco_id)}.npy")
-        target = torch.from_numpy(np.load(emb_path)).float()
+        target = torch.tensor(self.embeddings[emb_idx], dtype=torch.float32)
         return pixel_values, target
 
 # 3. Adapter module and composite model
@@ -101,74 +110,89 @@ def train_adapter(model, train_loader, val_loader, epochs, device):
         print(f"Epoch {epoch}/{epochs} — Train MSE: {avg_train:.4f}, Val MSE: {avg_val:.4f}")
     return model
 
+def run_task_training(task_id, class_pair, shared_ids, available, coco, embed_path, image_npz_path, processor, model, device):
+    tr_ids = build_binary_split(coco, class_pair[0], class_pair[1])
+    tr_ids = [cid for cid in tr_ids if cid in available]
+    
+    va_ids = build_binary_split(coco, class_pair[0], class_pair[1], restrict_ids=shared_ids)
+    va_ids = [cid for cid in va_ids if cid in available]
+    
+    if not va_ids:
+        print(f"No shared-only for Task{task_id} → using full set for val.")
+        va_ids = [cid for cid in build_binary_split(coco, class_pair[0], class_pair[1]) if cid in available]
+
+    print(f"T{task_id} images: train {len(tr_ids)}, val {len(va_ids)}")
+
+    ds_tr = CLIPAdapterDataset(tr_ids, embed_path, image_npz_path, processor)
+    ds_va = CLIPAdapterDataset(va_ids, embed_path, image_npz_path, processor)
+    dl_tr = DataLoader(ds_tr, batch_size=32, shuffle=True)
+    dl_va = DataLoader(ds_va, batch_size=32)
+
+    print(f"\n### Training adapter on Task{task_id} ({class_pair}) ###")
+    model = train_adapter(model, dl_tr, dl_va, epochs=10, device=device)
+
+    save_path = f'models/clip_adapter_sequential_task{task_id}.pth'
+    torch.save(model.state_dict(), save_path)
+    print(f"Saved adapter for Task{task_id} → {save_path}")
+
+    return model
+
 # 5. Main pipeline
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    coco = COCO('data/coco_data/annotations/instances_val2017.json')
-    classes = ['person','chair','car','dining table','cup','bottle','bowl']
+    # Load annotation and stimulus info
+    coco = COCO('/home/mahdiani/projects/def-charesti/data/natural-scenes-dataset/nsddata_stimuli/stimuli/nsd/annotations/instances_val2017.json')
+    # classes = ['person', 'chair', 'car', 'dining table', 'cup', 'bottle', 'bowl', 'handbag', 'truck', 'bench', 'book', 
+    # 'backpack', 'sink', 'clock', 'dog', 'sports ball', 'cat', 'potted plant', 'cell phone', 'surfboard']
+    classes = [
+    "person", "chair", "car", "dining table", "cup", "bottle", "bowl", "handbag",
+    "truck", "bench", "book", "backpack", "sink", "clock", "dog", "sports ball",
+    "cat", "potted plant", "cell phone", "surfboard", "skis", "knife", "tie", "bus",
+    "traffic light", "tv", "bed", "umbrella", "train", "toilet", "tennis racket",
+    "couch", "spoon", "bird", "skateboard", "airplane", "boat", "motorcycle", "vase",
+    "bicycle", "pizza", "fork", "oven", "giraffe", "laptop", "baseball glove", "cake",
+    "horse", "banana", "remote", "elephant", "baseball bat", "kite", "wine glass",
+    "frisbee", "suitcase", "refrigerator", "cow", "sandwich", "teddy bear", "stop sign",
+    "zebra", "broccoli", "snowboard", "microwave", "fire hydrant", "keyboard", "donut",
+    "sheep", "apple", "carrot", "mouse", "orange", "bear", "hot dog", "toothbrush",
+    "scissors", "parking meter", "hair drier", "toaster"]
     cls2id = get_coco_category_ids(coco, classes)
+    id2cls = {v: k for k, v in cls2id.items()}
 
-    pairs = list(combinations(classes, 2))
-    best1 = max(pairs, key=lambda p: len(build_binary_split(coco, cls2id[p[0]], cls2id[p[1]])))
-    used  = set(best1)
-    best2 = max([p for p in pairs if p[0] not in used and p[1] not in used],
-                key=lambda p: len(build_binary_split(coco, cls2id[p[0]], cls2id[p[1]])))
-    print(f"Task1: {best1}, Task2: {best2}")
 
-    expd     = sio.loadmat('data/nsddata/experiments/nsd/nsd_expdesign.mat')
+    expd     = sio.loadmat('/home/mahdiani/projects/def-charesti/data/natural-scenes-dataset/nsddata/experiments/nsd/nsd_expdesign.mat')
     shared   = expd['sharedix'].ravel()
-    stiminfo = pd.read_pickle('data/nsddata/experiments/nsd/nsd_stim_info_merged.pkl')
+    stiminfo = pd.read_pickle('/home/mahdiani/projects/def-charesti/data/natural-scenes-dataset/nsddata/experiments/nsd/nsd_stim_info_merged.pkl')
     shared_ids = stiminfo['cocoId'][stiminfo['nsdId'].isin(shared)]
 
-    img_dir   = 'data/coco_data/val2017'
-    embed_dir = 'data/mpnet_embeddings'
-    available = {int(os.path.splitext(f)[0]) for f in os.listdir(embed_dir) if f.endswith('.npy')}
+    embed_path = '/home/mahdiani/projects/def-charesti/mahdiani/data/mpnet_embeddings/mpnet_embeddings_subject01.npz'
+    image_npz_path = '/home/mahdiani/projects/def-charesti/mahdiani/data/coco_images_subject01.npz'
+    embed_data = np.load(embed_path)
+    available = set(embed_data['coco_ids'])
+
     processor = CLIPProcessor.from_pretrained('openai/clip-vit-base-patch32')
-
-    # Task1
-    tr1 = build_binary_split(coco, cls2id[best1[0]], cls2id[best1[1]], restrict_ids=None)
-    tr1 = [cid for cid in tr1 if cid in available]
-    va1 = build_binary_split(coco, cls2id[best1[0]], cls2id[best1[1]], restrict_ids=shared_ids)
-    va1 = [cid for cid in va1 if cid in available]
-    if not va1:
-        print("No shared-only for Task1 → using full set for val.")
-        va1 = [cid for cid in build_binary_split(coco, cls2id[best1[0]], cls2id[best1[1]]) if cid in available]
-    print(f"T1 images: train {len(tr1)}, val {len(va1)}")
-
-    ds_tr1 = CLIPAdapterDataset(tr1, embed_dir, img_dir, processor)
-    ds_va1 = CLIPAdapterDataset(va1, embed_dir, img_dir, processor)
-    dl_tr1 = DataLoader(ds_tr1, batch_size=32, shuffle=True)
-    dl_va1 = DataLoader(ds_va1, batch_size=32)
-
     clip_model = CLIPModel.from_pretrained('openai/clip-vit-base-patch32')
-    adapter    = Adapter(input_dim=clip_model.config.projection_dim, output_dim=768)
-    model      = CLIPAdapterModel(clip_model, adapter)
+    adapter = Adapter(input_dim=clip_model.config.projection_dim, output_dim=768)
+    model = CLIPAdapterModel(clip_model, adapter)
 
-    print("\n### Training adapter on Task1 ###")
-    model = train_adapter(model, dl_tr1, dl_va1, epochs=10, device=device)
+    # Generate class pairs
+    pairs = list(combinations(classes, 2))
+    selected_pairs = []
+    used_classes = set()
+    for p in sorted(pairs, key=lambda p: len(build_binary_split(coco, cls2id[p[0]], cls2id[p[1]])), reverse=True):
+        if p[0] not in used_classes and p[1] not in used_classes:
+            selected_pairs.append((cls2id[p[0]], cls2id[p[1]]))
+            used_classes.update(p)
+        if len(selected_pairs) >= 11:  # Change 4 to however many tasks you want
+            break
 
-    # Task2
-    tr2 = build_binary_split(coco, cls2id[best2[0]], cls2id[best2[1]])
-    tr2 = [cid for cid in tr2 if cid in available]
-    va2 = build_binary_split(coco, cls2id[best2[0]], cls2id[best2[1]], restrict_ids=shared_ids)
-    va2 = [cid for cid in va2 if cid in available]
-    if not va2:
-        print("No shared-only for Task2 → using full set for val.")
-        va2 = [cid for cid in build_binary_split(coco, cls2id[best2[0]], cls2id[best2[1]]) if cid in available]
-    print(f"T2 images: train {len(tr2)}, val {len(va2)}")
+    print(f"Selected tasks: {[ (id2cls[p[0]], id2cls[p[1]]) for p in selected_pairs ]}")
 
-    ds_tr2 = CLIPAdapterDataset(tr2, embed_dir, img_dir, processor)
-    ds_va2 = CLIPAdapterDataset(va2, embed_dir, img_dir, processor)
-    dl_tr2 = DataLoader(ds_tr2, batch_size=32, shuffle=True)
-    dl_va2 = DataLoader(ds_va2, batch_size=32)
+    # Sequential training over tasks
+    for i, class_pair in enumerate(selected_pairs, 1):
+        model = run_task_training(i, class_pair, shared_ids, available, coco, embed_path, image_npz_path, processor, model, device)
 
-    print("\n### Sequential adapter train on Task2 ###")
-    model = train_adapter(model, dl_tr2, dl_va2, epochs=10, device=device)
 
-    os.makedirs('models', exist_ok=True)
-    torch.save(model.state_dict(), 'models/clip_adapter_sequential.pth')
-    print("\nSaved sequential adapter → models/clip_adapter_sequential.pth")
-    
 if __name__ == '__main__':
     main()
